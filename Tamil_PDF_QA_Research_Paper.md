@@ -1,10 +1,6 @@
 
 # Multilingual Document Question-Answering System for Tamil PDFs Using Multi-Agent Retrieval-Augmented Generation with Google Gemini
 
-**Author:** [Your Name]  
-**Affiliation:** [Your University/Institution]  
-**Email:** [your.email@example.com]  
-**Date:** February 09, 2026
 
 ---
 

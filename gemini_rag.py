@@ -6,23 +6,28 @@ import google.generativeai as genai
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.prompts import PromptTemplate
 import os
-from typing import List, Dict, Optional
-import re
+from typing import List, Dict
+from extractive_summarizer import ExtractiveTamilSummarizer
+from tamil_transformer_summarizer import TamilTransformerSummarizer
 
 
 class GeminiRAG:
     """Multi-agent RAG system using LangChain and Google Gemini"""
     
-    def __init__(self, api_key: str, model_name: str = "gemini-1.5-flash"):
+    def __init__(self, api_key: str, model_name: str = "gemini-1.5-flash", summary_mode: str = "transformer"):
         """
         Initialize Gemini RAG system with LangChain agents
         
         Args:
             api_key: Google API key
             model_name: Gemini model to use
+            summary_mode: One of transformer, algorithmic, gemini
         """
         self.api_key = api_key
         self.model_name = model_name
+        self.summary_mode = summary_mode
+        self.algorithmic_summarizer = ExtractiveTamilSummarizer()
+        self.transformer_summarizer = TamilTransformerSummarizer()
         
         # Configure Gemini
         genai.configure(api_key=api_key)
@@ -39,8 +44,8 @@ class GeminiRAG:
     
     def _setup_agents(self):
         """Setup specialized LangChain agents for different tasks"""
-        
-        # Agent 1: Tamil Summary Agent
+
+        # Optional Gemini summarizer kept as a fallback for experimentation.
         summary_template = """You are an expert at creating concise summaries in Tamil.
 
 Context from document:
@@ -53,14 +58,14 @@ If the context doesn't contain enough information, say so in Tamil.
 Use natural Tamil - avoid literal translations.
 
 Tamil Summary:"""
-        
+
         self.summary_prompt = PromptTemplate(
             template=summary_template,
             input_variables=["context", "question"]
         )
         self.summary_agent = self.summary_prompt | self.llm
         
-        # Agent 2: Translation Agent
+        # Agent 1: Translation Agent
         translation_template = """You are an expert Tamil to English translator.
 
 Tamil text to translate:
@@ -76,37 +81,37 @@ English Translation:"""
         )
         self.translation_agent = self.translation_prompt | self.llm
         
-        # Agent 3: Named Entity Recognition Agent
+        # Agent 2: Named Entity Recognition Agent
         ner_template = """You are an expert at extracting named entities from Tamil and English text.
 
 Original context from PDF:
 {context}
 
-Extract ALL named entities from the text above. Read the text carefully and identify proper nouns.
+    Extract ALL named entities from the text above. Read the text carefully and identify proper nouns.
 
 IMPORTANT INSTRUCTIONS:
 1. Extract entities ONLY from the provided context
-2. List each entity only ONCE (no duplicates)
-3. Use the exact spelling from the text
-4. Group entities by category
-5. If a category has no entities, leave it empty
-6. Format: One entity per line after the category label
+    2. List each entity only ONCE (no duplicates)
+    3. Use the exact spelling from the text
+    4. Group entities by category
+    5. If a category has no entities, leave it empty
+    6. Format: One entity per line after the category label
 
-Categories:
-- PERSON: Names of people, authors, poets, historical figures
-- LOCATION: Cities, countries, places, geographic locations  
-- ORGANIZATION: Institutions, companies, groups, associations
-- DATE: Specific dates, years, time periods, eras
-- OTHER: Books, works, events, or other significant proper nouns
+    Categories:
+    - PERSON: Names of people, authors, poets, historical figures
+    - LOCATION: Cities, countries, places, geographic locations
+    - ORGANIZATION: Institutions, companies, groups, associations
+    - DATE: Specific dates, years, time periods, eras
+    - OTHER: Books, works, events, or other significant proper nouns
 
-Output format (example):
-PERSON: Name1, Name2, Name3
-LOCATION: Place1, Place2
-ORGANIZATION: Org1, Org2
-DATE: 1882, 2020
-OTHER: Book Title, Event Name
+    Output format (example):
+    PERSON: Name1, Name2, Name3
+    LOCATION: Place1, Place2
+    ORGANIZATION: Org1, Org2
+    DATE: 1882, 2020
+    OTHER: Book Title, Event Name
 
-Now extract the entities:"""
+    Now extract the entities:"""
         
         self.ner_prompt = PromptTemplate(
             template=ner_template,
@@ -129,23 +134,33 @@ Now extract the entities:"""
             # Combine context
             context = "\n\n---\n\n".join(context_chunks)
             
-            print("🤖 Agent 1: Generating Tamil summary...")
-            # Agent 1: Generate Tamil summary
-            result = self.summary_agent.invoke({
-                "context": context,
-                "question": query
-            })
-            tamil_summary = result.content.strip()
+            if self.summary_mode == "transformer":
+                print("🤖 Step 1: Generating Tamil summary (Tamil transformer)...")
+                try:
+                    tamil_summary = self.transformer_summarizer.summarize(context_chunks=context_chunks)
+                except Exception as transformer_error:
+                    print(f"Transformer summarizer failed, falling back to algorithmic mode: {transformer_error}")
+                    tamil_summary = self.algorithmic_summarizer.summarize(context_chunks=context_chunks, max_sentences=6)
+            elif self.summary_mode == "algorithmic":
+                print("🤖 Step 1: Generating Tamil summary (algorithmic fallback)...")
+                tamil_summary = self.algorithmic_summarizer.summarize(context_chunks=context_chunks, max_sentences=6)
+            else:
+                print("🤖 Step 1: Generating Tamil summary (Gemini fallback)...")
+                result = self.summary_agent.invoke({
+                    "context": context,
+                    "question": query
+                })
+                tamil_summary = result.content.strip()
             
-            print("🤖 Agent 2: Translating to English...")
-            # Agent 2: Translate to English
+            print("🤖 Agent 1: Translating to English...")
+            # Agent 1: Translate to English
             result = self.translation_agent.invoke({
                 "tamil_text": tamil_summary
             })
             english_summary = result.content.strip()
             
-            print("🤖 Agent 3: Extracting named entities...")
-            # Agent 3: Extract named entities from full context
+            print("🤖 Agent 2: Extracting named entities...")
+            # Agent 2: Extract named entities from full context
             result = self.ner_agent.invoke({
                 "context": context
             })

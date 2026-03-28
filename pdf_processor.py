@@ -23,9 +23,8 @@ class PDFProcessor:
             with pdfplumber.open(pdf_path) as pdf:
                 for page in pdf.pages:
                     page_text = page.extract_text(
-                        layout=True,
-                        x_tolerance=3,
-                        y_tolerance=3
+                        x_tolerance=2,
+                        y_tolerance=2
                     )
                     if page_text:
                         text += page_text + "\n\n"
@@ -85,15 +84,63 @@ class PDFProcessor:
         return (special_chars / total_chars) > 0.2
     
     def _clean_text(self, text: str) -> str:
-        """Clean extracted text"""
-        # Remove excessive whitespace
-        text = re.sub(r'\n\s*\n\s*\n+', '\n\n', text)
-        text = re.sub(r' +', ' ', text)
-        
-        # Fix common PDF extraction issues
+        """Clean extracted text and suppress common PDF header/footer artifacts."""
         text = text.replace('\x00', '')
-        
-        return text.strip()
+
+        raw_lines = text.splitlines()
+        normalized_lines: List[str] = []
+
+        for line in raw_lines:
+            line = re.sub(r'\s+', ' ', line).strip()
+
+            # Keep paragraph boundaries from empty lines.
+            if not line:
+                normalized_lines.append("")
+                continue
+
+            # Skip marker-only lines like "+ * *" or punctuation-only fragments.
+            if re.fullmatch(r'[+*\-_=~.\s]+', line):
+                continue
+
+            # Skip likely page-number artifacts.
+            if re.fullmatch(r'\d+(\s*[+*\-]\s*[+*\-])?', line):
+                continue
+
+            # Skip common header/footer patterns like "472 விந்தன் கதைகள்".
+            if re.fullmatch(r'\d+\s+.+', line) and len(line) < 80 and not re.search(r'[.!?]', line):
+                continue
+            if re.fullmatch(r'.+\s+\d+', line) and len(line) < 80 and not re.search(r'[.!?]', line):
+                continue
+
+            normalized_lines.append(line)
+
+        # Rebuild paragraphs by joining wrapped lines with spaces.
+        paragraphs: List[str] = []
+        current_lines: List[str] = []
+
+        for line in normalized_lines:
+            if not line:
+                if current_lines:
+                    paragraphs.append(" ".join(current_lines).strip())
+                    current_lines = []
+                continue
+
+            # Avoid repeated consecutive lines from extraction artifacts.
+            if current_lines and current_lines[-1] == line:
+                continue
+
+            current_lines.append(line)
+
+        if current_lines:
+            paragraphs.append(" ".join(current_lines).strip())
+
+        # Remove very short/noisy paragraphs.
+        paragraphs = [p for p in paragraphs if len(p) >= 20 and not re.fullmatch(r'[\W_]+', p)]
+
+        cleaned = "\n\n".join(paragraphs)
+        cleaned = re.sub(r'\n\s*\n\s*\n+', '\n\n', cleaned)
+        cleaned = re.sub(r' +', ' ', cleaned)
+        return cleaned.strip()
     
     def semantic_chunk(self, text: str) -> List[str]:
         """

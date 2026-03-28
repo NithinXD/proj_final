@@ -1,18 +1,27 @@
 # Tamil PDF Question-Answering System
 
-A Retrieval-Augmented Generation (RAG) pipeline for Tamil PDF documents using Google Gemini.
+A Retrieval-Augmented Generation (RAG) pipeline for Tamil PDF documents using Google Gemini + algorithmic summarization.
 
 ## 🌟 Features
 
 - **Tamil PDF Processing**: Extract and process Tamil Unicode text from PDFs
 - **Intelligent Chunking**: Semantic chunking with paragraph/sentence boundaries
 - **Vector Search**: Multilingual embeddings with ChromaDB
-- **RAG with Gemini**: Context-grounded responses using Google Gemini 1.5
+- **Novel Hybrid Pipeline**: Tamil transformer summary generation (no Gemini summary call) + Gemini translation/NER
 - **Structured Output**: Three-block response format:
   - தமிழ் சுருக்கம் (Tamil Summary)
   - English Summary
   - Named Entity Recognition
 - **Interactive UI**: Streamlit-based web interface
+
+## Novelty Angle (For Project Demo)
+
+This project now includes a clear novelty contribution beyond a standard API-only RAG setup:
+
+1. **Gemini-free summary generation**: Tamil summary is produced locally using a transformer generator (`csebuetnlp/mT5_multilingual_XLSum`).
+2. **Hybrid architecture**: Local transformer summarizer + LLM-based translation/NER, reducing token usage and API dependency for one major stage.
+3. **Long-context handling**: Map-reduce summarization on chunk windows improves stability on larger PDFs.
+4. **Cost/performance benefit**: Fewer generation API calls per query while preserving structured response quality.
 
 ## 📋 Requirements
 
@@ -90,6 +99,25 @@ proj_final/
 ```
 
 ## 🔧 Configuration
+
+### Summary mode
+
+By default, the app runs in transformer summary mode:
+
+```python
+gemini_rag = GeminiRAG(
+   api_key=api_key,
+   model_name="gemini-2.5-flash",
+   summary_mode="transformer",
+)
+```
+
+Other modes for ablation experiments:
+
+```python
+summary_mode="algorithmic"  # TF-IDF extractive fallback
+summary_mode="gemini"       # pure Gemini summary baseline
+```
 
 ### Adjust retrieval settings:
 - **Top-k**: Number of chunks to retrieve (default: 5)

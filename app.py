@@ -10,6 +10,8 @@ from vector_store import VectorStore
 from gemini_rag import GeminiRAG
 import time
 from datetime import datetime
+import pandas as pd
+from io import BytesIO
 
 # Load environment variables
 load_dotenv()
@@ -75,7 +77,11 @@ def initialize_system():
             persist_directory="./chroma_db",
             api_key=api_key  # Pass API key for Gemini embeddings
         )
-        gemini_rag = GeminiRAG(api_key=api_key, model_name="gemini-2.5-flash")
+        gemini_rag = GeminiRAG(
+            api_key=api_key,
+            model_name="gemini-2.5-flash",
+            summary_mode="transformer",
+        )
         
         return pdf_processor, vector_store, gemini_rag
     except Exception as e:
@@ -129,8 +135,104 @@ def process_uploaded_pdf(uploaded_file, pdf_processor, vector_store):
             os.remove(temp_path)
 
 
-def display_response(response):
-    """Display the structured response with improved NER formatting"""
+def parse_fixed_entities(ner_text: str) -> dict:
+    """Parse fixed-category NER output (PERSON/LOCATION/ORGANIZATION/DATE/OTHER)."""
+    entities = {
+        "PERSON": [],
+        "LOCATION": [],
+        "ORGANIZATION": [],
+        "DATE": [],
+        "OTHER": []
+    }
+
+    current_category = None
+    for line in ner_text.split('\n'):
+        line = line.strip()
+        if not line:
+            continue
+
+        matched_header = False
+        for category in entities.keys():
+            if line.upper().startswith(category + ':'):
+                current_category = category
+                items = line.split(':', 1)[1].strip()
+                if items:
+                    entities[category].extend([item.strip() for item in items.split(',') if item.strip()])
+                matched_header = True
+                break
+
+        if matched_header:
+            continue
+
+        if current_category and not line.startswith('-'):
+            clean_line = line.lstrip('- ').strip()
+            if clean_line:
+                entities[current_category].append(clean_line)
+
+    return entities
+
+
+def generate_response_for_mode(gemini_rag: GeminiRAG, mode: str, query: str, context_chunks):
+    """Generate response while temporarily switching summary mode."""
+    original_mode = gemini_rag.summary_mode
+    try:
+        gemini_rag.summary_mode = mode
+        return gemini_rag.answer_question(query=query, context_chunks=context_chunks)
+    finally:
+        gemini_rag.summary_mode = original_mode
+
+
+def export_to_excel(response, query="", response_type="Answer"):
+    """Export response data to Excel format"""
+    # Parse named entities using fixed categories
+    ner_text = response["named_entities"]
+    entities = parse_fixed_entities(ner_text)
+    
+    # Create Excel file
+    output = BytesIO()
+    with pd.ExcelWriter(output, engine='openpyxl') as writer:
+        # Summary sheet
+        summary_data = {
+            'Type': ['Query', 'Tamil Summary', 'English Summary'],
+            'Content': [
+                query,
+                response['tamil_summary'],
+                response['english_summary']
+            ]
+        }
+        df_summary = pd.DataFrame(summary_data)
+        df_summary.to_excel(writer, sheet_name='Summary', index=False)
+        
+        # Named Entities sheet
+        ner_data = []
+        for category, items in entities.items():
+            if items:
+                for item in items:
+                    ner_data.append({'Category': category, 'Entity': item})
+            else:
+                ner_data.append({'Category': category, 'Entity': 'None found'})
+        
+        df_ner = pd.DataFrame(ner_data)
+        df_ner.to_excel(writer, sheet_name='Named Entities', index=False)
+        
+        # Metadata sheet
+        metadata = {
+            'Field': ['Response Type', 'Generated At', 'System'],
+            'Value': [
+                response_type,
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                'Tamil PDF QA System'
+            ]
+        }
+        df_metadata = pd.DataFrame(metadata)
+        df_metadata.to_excel(writer, sheet_name='Metadata', index=False)
+    
+    output.seek(0)
+    return output
+
+
+def display_response(response, show_export=False, query="", response_type="Answer"):
+    """Display structured response with fixed-category NER layout"""
     
     # Tamil Summary
     st.markdown("### 📝 சுருக்கம் (Tamil Summary)")
@@ -142,50 +244,16 @@ def display_response(response):
     st.markdown(f'<div class="summary-box">{response["english_summary"]}</div>', 
                 unsafe_allow_html=True)
     
-    # Named Entities - Parse and format nicely
+    # Named Entities
     st.markdown("### 🏷️ Named Entities")
     
     ner_text = response["named_entities"]
     
-    # Parse the NER output
-    entities = {
-        "PERSON": [],
-        "LOCATION": [],
-        "ORGANIZATION": [],
-        "DATE": [],
-        "OTHER": []
-    }
-    
-    current_category = None
-    for line in ner_text.split('\n'):
-        line = line.strip()
-        if not line:
-            continue
-        
-        # Check if it's a category header
-        for category in entities.keys():
-            if line.startswith(category + ':'):
-                current_category = category
-                # Extract items after colon
-                items = line.split(':', 1)[1].strip()
-                if items:
-                    # Split by comma and clean
-                    items_list = [item.strip() for item in items.split(',') if item.strip()]
-                    entities[category].extend(items_list)
-                break
-        else:
-            # Not a category header, add to current category if exists
-            if current_category and line and not line.startswith('-'):
-                # Remove leading dash if present
-                clean_line = line.lstrip('- ').strip()
-                if clean_line:
-                    entities[current_category].append(clean_line)
-    
-    # Display entities in organized columns
+    entities = parse_fixed_entities(ner_text)
+
     col1, col2 = st.columns(2)
-    
+
     with col1:
-        # PERSON
         if entities["PERSON"]:
             st.markdown("**👤 PERSON**")
             for person in entities["PERSON"]:
@@ -193,10 +261,9 @@ def display_response(response):
         else:
             st.markdown("**👤 PERSON**")
             st.markdown("*None found*")
-        
+
         st.markdown("")
-        
-        # LOCATION
+
         if entities["LOCATION"]:
             st.markdown("**📍 LOCATION**")
             for location in entities["LOCATION"]:
@@ -204,10 +271,9 @@ def display_response(response):
         else:
             st.markdown("**📍 LOCATION**")
             st.markdown("*None found*")
-        
+
         st.markdown("")
-        
-        # DATE
+
         if entities["DATE"]:
             st.markdown("**📅 DATE**")
             for date in entities["DATE"]:
@@ -215,9 +281,8 @@ def display_response(response):
         else:
             st.markdown("**📅 DATE**")
             st.markdown("*None found*")
-    
+
     with col2:
-        # ORGANIZATION
         if entities["ORGANIZATION"]:
             st.markdown("**🏢 ORGANIZATION**")
             for org in entities["ORGANIZATION"]:
@@ -225,10 +290,9 @@ def display_response(response):
         else:
             st.markdown("**🏢 ORGANIZATION**")
             st.markdown("*None found*")
-        
+
         st.markdown("")
-        
-        # OTHER
+
         if entities["OTHER"]:
             st.markdown("**📚 OTHER**")
             for other in entities["OTHER"]:
@@ -240,6 +304,9 @@ def display_response(response):
     # Show raw response in expander
     with st.expander("🔍 View Raw Response"):
         st.text(response.get("raw_response", ""))
+    
+    with st.expander("🐛 Debug: Raw NER Text"):
+        st.code(ner_text)
 
 
 def main():
@@ -299,6 +366,15 @@ def main():
         # Retrieval settings
         st.subheader("🎛️ Retrieval Settings")
         top_k = st.slider("Number of chunks to retrieve", 3, 10, 5)
+
+        st.markdown("---")
+        st.subheader("🧪 Response Mode")
+        response_mode = st.radio(
+            "Choose summary backend",
+            ["Transformer", "Gemini", "Compare Both"],
+            index=2,
+            help="Compare Both shows transformer and Gemini responses side-by-side."
+        )
         
         st.markdown("---")
         st.markdown("""
@@ -351,15 +427,74 @@ def main():
                         st.markdown("---")
                 
                 # Generate answer
-                with st.spinner("✨ Generating structured response..."):
-                    response = gemini_rag.answer_question(
-                        query=user_query,
-                        context_chunks=search_results['documents']
+                if response_mode == "Compare Both":
+                    with st.spinner("✨ Generating Transformer and Gemini responses..."):
+                        transformer_response = generate_response_for_mode(
+                            gemini_rag,
+                            mode="transformer",
+                            query=user_query,
+                            context_chunks=search_results['documents'],
+                        )
+                        gemini_response = generate_response_for_mode(
+                            gemini_rag,
+                            mode="gemini",
+                            query=user_query,
+                            context_chunks=search_results['documents'],
+                        )
+
+                    st.markdown("## 📋 Response Comparison")
+                    tab1, tab2 = st.tabs(["Transformer Summary", "Gemini Summary"])
+
+                    with tab1:
+                        display_response(transformer_response, query=user_query, response_type="Q&A Answer - Transformer")
+                        transformer_excel = export_to_excel(
+                            transformer_response,
+                            query=user_query,
+                            response_type="Q&A Answer - Transformer"
+                        )
+                        st.download_button(
+                            label="📥 Download Transformer Response",
+                            data=transformer_excel,
+                            file_name=f"qa_transformer_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="download_qa_transformer"
+                        )
+
+                    with tab2:
+                        display_response(gemini_response, query=user_query, response_type="Q&A Answer - Gemini")
+                        gemini_excel = export_to_excel(
+                            gemini_response,
+                            query=user_query,
+                            response_type="Q&A Answer - Gemini"
+                        )
+                        st.download_button(
+                            label="📥 Download Gemini Response",
+                            data=gemini_excel,
+                            file_name=f"qa_gemini_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            key="download_qa_gemini"
+                        )
+                else:
+                    selected_mode = "transformer" if response_mode == "Transformer" else "gemini"
+                    with st.spinner(f"✨ Generating {response_mode} response..."):
+                        response = generate_response_for_mode(
+                            gemini_rag,
+                            mode=selected_mode,
+                            query=user_query,
+                            context_chunks=search_results['documents'],
+                        )
+
+                    st.markdown(f"## 📋 {response_mode} Response")
+                    display_response(response, show_export=True, query=user_query, response_type=f"Q&A Answer - {response_mode}")
+
+                    excel_file = export_to_excel(response, query=user_query, response_type=f"Q&A Answer - {response_mode}")
+                    st.download_button(
+                        label="📥 Download as Excel",
+                        data=excel_file,
+                        file_name=f"qa_response_{response_mode.lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_qa"
                     )
-                
-                # Display response
-                st.markdown("## 📋 Response")
-                display_response(response)
     
     # Document summary feature
     st.markdown("---")
@@ -370,11 +505,50 @@ def main():
             
             if all_chunks and all_chunks['documents']:
                 chunks_for_summary = all_chunks['documents'][:10]
-                
-                summary_response = gemini_rag.summarize_document(chunks_for_summary)
-                
-                st.markdown("## 📄 Document Summary")
-                display_response(summary_response)
+
+                summary_query = "இந்த ஆவணத்தின் முக்கிய உள்ளடக்கம் என்ன? (What is the main content of this document?)"
+
+                if response_mode == "Compare Both":
+                    transformer_summary = generate_response_for_mode(
+                        gemini_rag,
+                        mode="transformer",
+                        query=summary_query,
+                        context_chunks=chunks_for_summary,
+                    )
+                    gemini_summary = generate_response_for_mode(
+                        gemini_rag,
+                        mode="gemini",
+                        query=summary_query,
+                        context_chunks=chunks_for_summary,
+                    )
+
+                    st.markdown("## 📄 Document Summary Comparison")
+                    tab1, tab2 = st.tabs(["Transformer Summary", "Gemini Summary"])
+
+                    with tab1:
+                        display_response(transformer_summary, query="Document Summary", response_type="Full Summary - Transformer")
+                    with tab2:
+                        display_response(gemini_summary, query="Document Summary", response_type="Full Summary - Gemini")
+                else:
+                    selected_mode = "transformer" if response_mode == "Transformer" else "gemini"
+                    summary_response = generate_response_for_mode(
+                        gemini_rag,
+                        mode=selected_mode,
+                        query=summary_query,
+                        context_chunks=chunks_for_summary,
+                    )
+
+                    st.markdown(f"## 📄 Document Summary ({response_mode})")
+                    display_response(summary_response, show_export=True, query="Document Summary", response_type=f"Full Document Summary - {response_mode}")
+
+                    excel_file = export_to_excel(summary_response, query="Document Summary", response_type=f"Full Document Summary - {response_mode}")
+                    st.download_button(
+                        label="📥 Download Summary as Excel",
+                        data=excel_file,
+                        file_name=f"document_summary_{response_mode.lower()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="download_summary"
+                    )
             else:
                 st.warning("No documents in database")
 

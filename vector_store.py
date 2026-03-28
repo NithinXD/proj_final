@@ -50,6 +50,30 @@ class VectorStore:
                 metadata={"description": "Tamil PDF document chunks"}
             )
             print(f"Created new collection: {collection_name}")
+
+        self.embedding_models = [
+            "models/text-embedding-004",
+            "text-embedding-004",
+            "models/embedding-001",
+            "embedding-001",
+        ]
+
+    def _embed_with_fallback(self, content: str, task_type: str) -> List[float]:
+        """Try multiple Gemini embedding model names for compatibility."""
+        last_error = None
+        for model_name in self.embedding_models:
+            try:
+                result = genai.embed_content(
+                    model=model_name,
+                    content=content,
+                    task_type=task_type
+                )
+                return result['embedding']
+            except Exception as e:
+                last_error = e
+                continue
+
+        raise RuntimeError(f"All embedding model attempts failed: {last_error}")
     
     def embed_texts(self, texts: List[str]) -> List[List[float]]:
         """Generate embeddings for texts using Gemini API"""
@@ -58,12 +82,7 @@ class VectorStore:
         
         for i, text in enumerate(texts):
             try:
-                result = genai.embed_content(
-                    model="models/text-embedding-004",
-                    content=text,
-                    task_type="retrieval_document"
-                )
-                embeddings.append(result['embedding'])
+                embeddings.append(self._embed_with_fallback(text, "retrieval_document"))
                 
                 if (i + 1) % 10 == 0:
                     print(f"  Processed {i + 1}/{len(texts)} chunks")
@@ -77,12 +96,7 @@ class VectorStore:
     def embed_query(self, query: str) -> List[float]:
         """Generate embedding for query using Gemini API"""
         try:
-            result = genai.embed_content(
-                model="models/text-embedding-004",
-                content=query,
-                task_type="retrieval_query"
-            )
-            return result['embedding']
+            return self._embed_with_fallback(query, "retrieval_query")
         except Exception as e:
             print(f"Error embedding query: {e}")
             return [0.0] * 768
